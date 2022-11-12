@@ -78,15 +78,49 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
     """Transformer Block"""
-    def __init__(self, dim, n_heads, mlp_ratio, qkv_bias, p=0., atten_p=0.):
+    def __init__(self, dim, n_heads, mlp_ratio, qkv_bias, proj_pdrop=0., atten_pdrop=0.):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, eps=1e-6)
-        self.attn = SelfAttention(dim,n_head=n_heads, qkv_bias=qkv_bias, atten_pdrop=atten_p, proj_pdrop=p)
+        self.attn = SelfAttention(dim, n_head=n_heads, qkv_bias=qkv_bias, atten_pdrop=atten_pdrop, proj_pdrop=proj_pdrop)
         self.norm2 = nn.LayerNorm(dim, eps=1e-6)
-        self.mlp = MLP(in_features=dim, hidden_features=hidden_features)
-class ViT(nn.Module):
-    def __init__(self):
-        pass
+        hidden_features = int(dim * mlp_ratio)
+        self.mlp = MLP(in_features=dim, hidden_features=hidden_features, out_features=dim)
 
-    def forward(self):
-        pass
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x)) 
+        x = x + self.mlp(self.norm2(x))
+
+        return x
+
+class ViT(nn.Module):
+    def __init__(self, img_size=224, patch_size=16, in_channels=3, n_classes=10, embed_dim=768, depth=12, n_heads=12, mlp_ratio=4., qkv_bias=True, proj_pdrop=0., atten_pdrop=0.):
+        super().__init__()
+
+        self.patch_embed = PatchifyEmbed(img_size=img_size, patch_size=patch_size, in_channels=in_channels, embed_dim=embed_dim)
+        self.class_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+
+        self.pos_embed = nn.Parameter(torch.zeros(1, 1 + self.patch_embed.n_patches, embed_dim))
+        self.pos_drop = nn.Dropout(p=proj_pdrop)
+
+        self.blocks = nn.ModuleList([Block(dim=embed_dim, n_heads=n_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, proj_pdrop=proj_pdrop, atten_pdrop=atten_pdrop) for _ in range(depth)])
+
+        self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
+        self.head = nn.Linear(embed_dim, n_classes)
+
+    def forward(self, x):
+        n_samples = x.shape[0]
+        x = self.patch_embed(x)
+
+        class_token = self.class_token.expand(n_samples, -1, -1)
+        x = torch.cat((class_token, x), dim=1)
+        x = x + self.pos_embed
+        x = self.pos_drop(x)
+
+        for block in self.blocks:
+            x = block(x)
+
+        x = self.norm(x)
+        class_token_final = x[:, 0]
+        x = self.head(class_token_final)
+
+        return x
